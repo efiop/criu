@@ -42,6 +42,8 @@
 #include "servicefd.h"
 #include "cr-service.h"
 
+#include "cr-errno.h"
+
 #define VMA_OPT_LEN	128
 
 static void vma_opt_str(const struct vma_area *v, char *opt)
@@ -268,6 +270,7 @@ inline int open_pid_proc(pid_t pid)
 	fd = openat(dfd, path, O_RDONLY);
 	if (fd < 0) {
 		pr_perror("Can't open %s", path);
+		set_cr_errno(ESRCH);
 		return -1;
 	}
 
