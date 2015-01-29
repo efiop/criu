@@ -1,7 +1,7 @@
 all: test-c rpc_pb2.py criu
 .PHONY: all
 
-run: all
+run: clean all
 	mkdir -p build
 	chmod a+rwx build
 	sudo -g '#1000' -u '#1000' ./run.sh
