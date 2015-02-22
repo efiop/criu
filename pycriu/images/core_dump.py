@@ -137,6 +137,19 @@ class prstatus(Structure):
 		('pr_fpvalid',	c_uint)
 	]
 
+class core_dump_desc:
+	ehdr = None
+	phdr = None
+	nhdr = None
+	prpsinfo = None
+
+#desc_by_arch = {
+#	'X86_64'	: core_dump_desc(
+#				ehdr = elf.Elf64_Ehdr,
+#				phdr = elf.Elf64_Phdr,
+#				nhdr = elf.Elf64_Nhdr)
+#}
+
 class core_dump:
 	def parse_imgs(self, imgs_dir, pid):
 		"""
@@ -296,9 +309,12 @@ class core_dump:
 
 		return p
 
-	def _get_regs(self):
+	def _get_regs(self, pid=None):
 		r = regs()
-		core_regs = self.core['thread_info']['gpregs']
+		if pid == None or pid == self.pid:
+			core_regs = self.core['thread_info']['gpregs']
+		else:
+			core_regs = self._open_and_load('core-'+str(pid))[0]['thread_info']['gregs']
 
 		memset(addressof(r), 0, sizeof(regs()))
 		#('r15',		c_ulonglong),
@@ -358,9 +374,13 @@ class core_dump:
 
 		return r
 
-	def _get_fpregs(self):
+	def _get_fpregs(self, pid=None):
 		fp = fpregs()
-		core_regs = self.core['thread_info']['fpregs']
+
+		if pid == self.pid or pid == None:
+			core_regs = self.core['thread_info']['fpregs']
+		else:
+			core_regs = self._open_and_load('core-'+str(pid))[0]['thread_info']['fpregs']
 
 		memset(addressof(fp), 0, sizeof(fpregs()))
 		#('cwd',		c_ushort),
@@ -429,6 +449,60 @@ class core_dump:
 		#('error_code',	c_ulong),# just 0
 		#('fault_address', c_ulong)# just 0
 		return c
+
+	def _get_prstatus(self, pid):
+		p_class = self._choose_prstatus()
+		p = p_class()
+
+		memset(addressof(p), 0, sizeof(p))
+
+		# FIXME FILL WITH INFO!!!
+		#('pr_info',	elf_siginfo),
+		#FIXME fill it with info
+		esi = elf_siginfo()
+		memset(addressof(esi), 0, sizeof(esi))
+		p.pr_info	= esi
+		#('pr_cursig',	c_ushort),
+		#FIXME fill
+		p.pr_cursig	= 0
+		#('pr_sigpend',	c_ulong),
+		#('pr_sighold',	c_ulong),
+		#('pr_pid',	c_int),
+		p.pid		= pid
+		#('pr_ppid',	c_int),
+		p.pr_ppid	= filter(lambda x: x['pid'] == pid, self.pstree)[0]['ppid']
+		#('pr_pgrp',	c_int),
+		p.pr_pgrp	= filter(lambda x: x['pid'] == pid, self.pstree)[0]['pgid']
+		#('pr_sid',	c_int),
+		p.pr_sid	= filter(lambda x: x['pid'] == pid, self.pstree)[0]['sid']
+		#('pr_utime',	elf_timeval),
+		#('pr_stime',	elf_timeval),
+		#('pr_cutime',	elf_timeval),
+		#('pr_cstime',	elf_timeval),
+		#('pr_reg',	regs),
+		p.pr_reg	= self._get_regs(pid)
+		#('pr_fpvalid',	c_uint)
+
+		return p
+
+	def _write_thread_regs(self, buf, pid):
+		nhdr_class = self._choose_nhdr()
+		nhdr = nhdr_class()
+		memset(addressof(nhdr), 0, sizeof(nhdr))
+		nhdr.n_namesz	= 5
+		nhdr.n_descsz	= sizeof(prstatus())
+		nhdr.n_type	= elf.NT_PRSTATUS
+
+		buf.write(nhdr)
+		buf.write("CORE\0\0\0\0")
+		buf.write(self._get_prstatus(pid))
+
+		nhdr.n_descsz	= sizeof(fpregs())
+		nhdr.n_type	= elf.NT_FPREGSET
+
+		buf.write(nhdr)
+		buf.write("CORE\0\0\0\0")
+		buf.write(self._get_fpregs())
 
 	def write(self, f):
 		buf = io.BytesIO()
@@ -528,6 +602,8 @@ class core_dump:
 			   m['vaddr'] + 4096*m['nr_pages'] <= vdso_vma['end']:
 				self.pages.seek(ofs)
 				vdso_data.write(self.pages.read(vdso_vma['end'] - vdso_vma['start']))
+				# Don't forget to rewind
+				self.pages.seek(0)
 				break
 
 			ofs += 4096*m['nr_pages']
@@ -578,6 +654,48 @@ class core_dump:
 			buf.write(auxv)
 
 		# Thread regs
+		# Main thread first
+		self._write_thread_regs(buf, self.pid)
+
+		for t in filter(lambda x: x != self.pid, filter(lambda x: x['pid'] == self.pid, self.pstree)[0]['threads']):
+			self._write_thread_regs(buf, t)
+
+		# User provided notes should be here, but we have none
+
+		# Align
+		if note_align:
+			scratch = (c_char * note_align)()
+			memset(scratch, 0, sizeof(scratch))
+			buf.write(scratch)
+
+		# And write all memory segments
+		buf.write(self.pages.read())
+		# Don't forget to rewind
+		self.pages.seek(0)
+
+		print(vdso_ehdr.e_phnum)
+		# And don't forget about vdso
+		for i in range(vdso_ehdr.e_phnum):
+			vdso_data.seek(0)
+			vdso_data.readinto(vdso_phdr)
+			if vdso_phdr.p_type == elf.PT_LOAD:
+				# This segment has already been dumped
+				continue
+			# FIXME make a helper to get mem segment
+			ofs = 0
+			print(vdso_phdr.p_filesz)
+			for m in self.pagemap[1:]:
+				# Not totally sure that vdso can't be spreaded, but still
+				if m['vaddr'] >= vdso_phdr.p_vaddr and\
+				   m['vaddr'] + 4096*m['nr_pages'] <= vdso_phdr.p_vaddr\
+									+ vdso_phdr.p_filesz:
+					self.pages.seek(ofs)
+					buf.write(self.pages.read(vdso_phdr.p_filesz))
+					# Don't forget to rewind
+					self.pages.seek(0)
+					break
+
+				ofs += 4096*m['nr_pages']
 		
 		# Finally dump buf into file
 		buf.seek(0)
