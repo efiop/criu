@@ -503,13 +503,11 @@ class core_dump:
 		phdrs = []
 		conts = []
 		for i in range(ehdr.e_phnum):
-			print("sdfds")
 			phdr = self.desc.phdr()
 			self._get_mem_chunk(addr, sizeof(phdr)).readinto(phdr)
 			addr += sizeof(phdr)
 
 			if phdr.p_type == elf.PT_LOAD:
-				print("LOAD!!!")
 				continue
 
 			cont = self._get_mem_chunk(phdr.p_vaddr, phdr.p_filesz)
@@ -603,7 +601,6 @@ class core_dump:
 			filesz = p.p_filesz
 			p.p_offset = offset
 			p.p_paddr = 0
-			print("Afadsfasf")
 			buf.write(p)
 
 		# Write the note section
@@ -616,8 +613,8 @@ class core_dump:
 		buf.write("CORE\0\0\0\0")
 		buf.write(self._get_prpsinfo())
 
-		nhdr.n_descsz	= sizeof(self.desc.core_user())
-		nhdr.n_type	= elf.NT_PRXREG #FIXME readelf says it is NT_TASKSTRUCT
+		nhdr.n_descsz	= sizeof(self.desc.core_user()) # FIXME no such thing in real core dump
+		nhdr.n_type	= elf.NT_PRXREG
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 		buf.write(self._get_core_user())
