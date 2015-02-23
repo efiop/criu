@@ -187,6 +187,7 @@ class core_dump:
 
 		self.desc = desc_by_arch[self.core['mtype']]
 
+		self.auxvs = self._get_auxvs()
 		self.vdso_ehdr, self.vdso_phdrs, self.vdso_phdrs_cont = self._get_vdso()
 
 	def _open_and_load(self, base_name):
@@ -474,63 +475,58 @@ class core_dump:
 		chunk.seek(0)
 		return chunk
 
-	def _get_vdso___(self):
-		auxv = self.desc.auxv_t()
-		vdso_ehdr_addr = 0
-		vdso_ehdr = self.desc.ehdr()
-
-## DELETE
-		VMA_AREA_VDSO = 1 << 3
-		vdso_vma = filter(lambda x: x['status'] & VMA_AREA_VDSO, self.mm['vmas'])[0]
-		print(hex(vdso_vma['start']))
-##
+	def _get_auxvs(self):
+		auxvs = []
 
 		#FIXME add helper for auxv
 		for i in range(len(self.mm['mm_saved_auxv'])/2):
+			auxv = self.desc.auxv_t()
 			auxv.a_type	= self.mm['mm_saved_auxv'][i]
 			auxv.a_un.a_val	= self.mm['mm_saved_auxv'][i+1]
-			if auxv.a_type == elf.AT_SYSINFO_EHDR:
-				print("OLOLO!")
-				print(hex(auxv.a_un.a_val))
-				
-				chunk = self._get_mem_chunk(auxv.a_un.a_val, sizeof(vdso_ehdr))
-				chunk.readinto(vdso_ehdr)
-			
+
+			auxvs.append(auxv)
+
+		return auxvs
 
 	def _get_vdso(self):
-		# FIXME Maybe it is better to parse auxv like we do above???
-		VMA_AREA_VDSO = 1 << 3
-		vdso_vma = filter(lambda x: x['status'] & VMA_AREA_VDSO, self.mm['vmas'])[0]
+		# Find vdso ehdr
+		auxv = filter(lambda x: x.a_type == elf.AT_SYSINFO_EHDR, self.auxvs)[0]
+		addr = auxv.a_un.a_val
 
-		vdso_data = self._get_mem_chunk(vdso_vma['start'], vdso_vma['end'] - vdso_vma['start'])
-		vdso_ehdr = self.desc.ehdr()
-		vdso_data.readinto(vdso_ehdr)
-		vdso_data.read(vdso_ehdr.e_phoff)
-		vdso_phdrs = []
-		vdso_phdrs_cont = []
-		for i in range(vdso_ehdr.e_phnum):
-			vdso_phdr = self.desc.phdr()
-			vdso_data.readinto(vdso_phdr)
-			if vdso_phdr.p_type == elf.PT_LOAD:
+		ehdr = self.desc.ehdr()
+		self._get_mem_chunk(addr, sizeof(ehdr)).readinto(ehdr)
+
+		# Skip offset
+		addr += ehdr.e_phoff
+
+		# Read non PT_LOAD phdrs and their contents
+		phdrs = []
+		conts = []
+		for i in range(ehdr.e_phnum):
+			print("sdfds")
+			phdr = self.desc.phdr()
+			self._get_mem_chunk(addr, sizeof(phdr)).readinto(phdr)
+			addr += sizeof(phdr)
+
+			if phdr.p_type == elf.PT_LOAD:
 				print("LOAD!!!")
 				continue
 
-			cont = self._get_mem_chunk(vdso_phdr.p_vaddr, vdso_phdr.p_filesz)
+			cont = self._get_mem_chunk(phdr.p_vaddr, phdr.p_filesz)
 			
-			vdso_phdrs.append(vdso_phdr)
-			vdso_phdrs_cont.append(cont)
+			phdrs.append(phdr)
+			conts.append(cont)
 
-		return (vdso_ehdr, vdso_phdrs, vdso_phdrs_cont)
+		return (ehdr, phdrs, conts)
 
 	def write(self, f):
 		buf = io.BytesIO()
 		num_mappings = len(self.mm['vmas'])
 		num_threads = len(filter(lambda x: x['pid'] == self.pid, self.pstree)[0]['threads'])
 
-#		num_extra_headers = len(self.vdso_phdrs)
-#		print(str(num_extra_headers))
+		num_extra_headers = len(self.vdso_phdrs)
 		# FIXME no vdso in real core dump
-		num_extra_headers = 0
+		#num_extra_headers = 0
 
 		# EHDR
 		ehdr = self.desc.ehdr()
@@ -566,9 +562,8 @@ class core_dump:
 				sizeof(self.desc.prstatus())+\
 				sizeof(self.desc.nhdr()) + 8 + sizeof(self.desc.fpregs()))
 
-		num_auxv = len(self.mm['mm_saved_auxv'])/2
-		if num_auxv != 0:
-			filesz += 8 + sizeof(self.desc.nhdr()) + num_auxv*sizeof(self.desc.auxv_t())
+		if len(self.auxvs) != 0:
+			filesz += 8 + sizeof(self.desc.nhdr()) + len(self.auxvs)*sizeof(self.desc.auxv_t())
 
 		# Write PT_NOTE
 		memset(addressof(phdr), 0, sizeof(phdr))
@@ -603,12 +598,14 @@ class core_dump:
 			buf.write(phdr)
 
 		# Write vdso phdrs FIXME no vdso phdrs in real core dump!!
-#		for p in self.vdso_phdrs:
-#			offset += filesz
-#			filesz = p.p_filesz
-#			p.p_offset = offset
-#			p.p_paddr = 0
-#			buf.write(p)
+		for p in self.vdso_phdrs:
+			offset += filesz
+			filesz = p.p_filesz
+			p.p_offset = offset
+			p.p_paddr = 0
+			print("Afadsfasf")
+			buf.write(p)
+
 		# Write the note section
 		nhdr = self.desc.nhdr()
 		memset(addressof(nhdr), 0, sizeof(nhdr))
@@ -620,23 +617,19 @@ class core_dump:
 		buf.write(self._get_prpsinfo())
 
 		nhdr.n_descsz	= sizeof(self.desc.core_user())
-		nhdr.n_type	= elf.NT_PRXREG
+		nhdr.n_type	= elf.NT_PRXREG #FIXME readelf says it is NT_TASKSTRUCT
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 		buf.write(self._get_core_user())
 
 		# AUXV
-		num_auxv = len(self.mm['mm_saved_auxv'])/2
-		auxv = self.desc.auxv_t()
-		nhdr.n_descsz	= num_auxv * sizeof(auxv)
+		nhdr.n_descsz	= len(self.auxvs) * sizeof(self.desc.auxv_t())
 		nhdr.n_type	= elf.NT_AUXV
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 
-		for i in range(num_auxv):
-			auxv.a_type	= self.mm['mm_saved_auxv'][i]
-			auxv.a_un.a_val	= self.mm['mm_saved_auxv'][i+1]
-			buf.write(auxv)
+		for a in self.auxvs:
+			buf.write(a)
 
 		# Thread regs
 		# Main thread first
@@ -659,8 +652,8 @@ class core_dump:
 		self.pages.seek(0)
 
 		# Write vdso contents FIXME no vdso in real core dump
-#		for c in self.vdso_phdrs_cont:
-#			buf.write(c.read())
+		for c in self.vdso_phdrs_cont:
+			buf.write(c.read())
 
 		# Finally dump buf into file
 		buf.seek(0)
