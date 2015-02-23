@@ -20,7 +20,7 @@ class fregs(Structure):
 		('st_space', c_uint*20),
 		]
 
-class prpsinfo(Structure):
+class prpsinfo_X86_64(Structure):
 	_fields_ = [
 		('pr_state',	c_ubyte),
 		('pr_sname',	c_byte),
@@ -37,7 +37,7 @@ class prpsinfo(Structure):
 		('pr_psargs',	c_char*80)
 	]
 
-class regs(Structure):
+class regs_X86_64(Structure):
 	_fields_ = [
 		('r15',		c_ulonglong),
 		('r14',		c_ulonglong),
@@ -68,7 +68,7 @@ class regs(Structure):
 		('gs',		c_ulonglong),
 	]
 
-class fpregs(Structure):
+class fpregs_X86_64(Structure):
 	_fields_ = [
 		('cwd',		c_ushort),
 		('swd',		c_ushort),
@@ -85,11 +85,11 @@ class fpregs(Structure):
 		('padding',	c_uint*24)
 	]
 
-class core_user(Structure):
+class core_user_X86_64(Structure):
 	_fields_ = [
-		('regs',	regs),
+		('regs',	regs_X86_64),
 		('fpvalid',	c_ulong),
-		('fpregs',	fpregs),
+		('fpregs',	fpregs_X86_64),
 		('tsize',	c_ulong),
 		('dsize',	c_ulong),
 		('ssize',	c_ulong),
@@ -97,8 +97,8 @@ class core_user(Structure):
 		('start_stack', c_ulong),
 		('signal',	c_ulong),
 		('reserved',	c_ulong),
-		('regs_ptr',	POINTER(regs)),
-		('fpregs_ptr',	POINTER(fpregs)),
+		('regs_ptr',	POINTER(regs_X86_64)),
+		('fpregs_ptr',	POINTER(fpregs_X86_64)),
 		('magic',	c_ulong),
 		('comm',	c_char*32),
 		('debugreg',	c_ulong),
@@ -119,7 +119,7 @@ class elf_timeval(Structure):
 		('tv_usec',	c_long)
 	]
 
-class prstatus(Structure):
+class prstatus_x86_64(Structure):
 	_fields_ = [
 		('pr_info',	elf_siginfo),
 		('pr_cursig',	c_ushort),
@@ -133,22 +133,39 @@ class prstatus(Structure):
 		('pr_stime',	elf_timeval),
 		('pr_cutime',	elf_timeval),
 		('pr_cstime',	elf_timeval),
-		('pr_reg',	regs),
+		('pr_reg',	regs_X86_64),
 		('pr_fpvalid',	c_uint)
 	]
 
 class core_dump_desc:
-	ehdr = None
-	phdr = None
-	nhdr = None
-	prpsinfo = None
+	def __init__(self, ehdr, ELFCLASS, ELFDATA, phdr, nhdr,\
+			auxv_t, prpsinfo, core_user, regs, fpregs, prstatus):
+		self.ehdr	= ehdr
+		self.ELFCLASS	= ELFCLASS
+		self.ELFDATA	= ELFDATA
+		self.phdr	= phdr
+		self.nhdr	= nhdr
+		self.auxv_t	= auxv_t
+		self.prpsinfo	= prpsinfo
+		self.core_user	= core_user
+		self.regs	= regs
+		self.fpregs	= fpregs
+		self.prstatus	= prstatus
 
-#desc_by_arch = {
-#	'X86_64'	: core_dump_desc(
-#				ehdr = elf.Elf64_Ehdr,
-#				phdr = elf.Elf64_Phdr,
-#				nhdr = elf.Elf64_Nhdr)
-#}
+desc_by_arch = {
+	'X86_64'	: core_dump_desc(
+				elf.Elf64_Ehdr,
+				elf.ELFCLASS64,
+				elf.ELFDATA2LSB,
+				elf.Elf64_Phdr,
+				elf.Elf64_Nhdr,
+				elf.Elf64_auxv_t,
+				prpsinfo_X86_64,
+				core_user_X86_64,
+				regs_X86_64,
+				fpregs_X86_64,
+				prstatus_x86_64)
+}
 
 class core_dump:
 	def parse_imgs(self, imgs_dir, pid):
@@ -166,6 +183,8 @@ class core_dump:
 		self.pagemap	= self._open_and_load('pagemap-'+str(self.pid))
 		#FIXME maybe open in binary mode? Or just read everything?
 		self.pages	= open(self.imgs_dir+'/pages-'+str(self.pagemap[0]['pages_id']) + '.img')
+
+		self.desc = desc_by_arch[self.core['mtype']]
 
 	def _open_and_load(self, base_name):
 		"""
@@ -209,78 +228,10 @@ class core_dump:
 
 		# Check that creds are present
 
-	# FIXME create some helper for _choose* methods
-	def _choose_ehdr(self):
-		ehdr_class_by_arch = {
-			'X86_64'	: elf.Elf64_Ehdr,
-			'ARM'		: elf.Elf32_Ehdr,
-			'AARCH64'	: elf.Elf64_Ehdr
-		}
-
-		return ehdr_class_by_arch[self.core['mtype']]
-
-	def _choose_phdr(self):
-		phdr_class_by_arch = {
-			'X86_64'	: elf.Elf64_Phdr,
-			'ARM'		: elf.Elf32_Phdr,
-			'AARCH64'	: elf.Elf64_Phdr
-		}
-
-		return phdr_class_by_arch[self.core['mtype']]
-
-	def _choose_nhdr(self):
-		nhdr_class_by_arch = {
-			'X86_64'	: elf.Elf64_Nhdr,
-			'ARM'		: elf.Elf32_Nhdr,
-			'AARCH64'	: elf.Elf64_Nhdr
-		}
-
-		return nhdr_class_by_arch[self.core['mtype']]
-
-	def _choose_ELFCLASS(self):
-		ELFCLASS_by_arch = {
-			'X86_64'	: elf.ELFCLASS64,
-			'ARM'		: elf.ELFCLASS32,
-			'AARCH64'	: elf.ELFCLASS64
-		}
-
-		return ELFCLASS_by_arch[self.core['mtype']]
-
-	def _choose_ELFDATA(self):
-		ELFDATA_by_arch = {
-			'X86_64'	: elf.ELFDATA2LSB,
-			'ARM'		: elf.ELFDATA2MSB,
-			'AARCH64'	: elf.ELFDATA2MSB
-		}
-
-		return ELFDATA_by_arch[self.core['mtype']]
-
-	def _choose_auxv_t(self):
-		auxv_t_by_arch = {
-			'X86_64'	: elf.Elf64_auxv_t,
-			'ARM'		: elf.Elf32_auxv_t,
-			'AARCH64'	: elf.Elf64_auxv_t
-		}
-
-		return auxv_t_by_arch[self.core['mtype']]
-
-	def _choose_prpsinfo(self):
-		return prpsinfo
-
-	def _choose_core_user(self):
-		return core_user
-
-	def _choose_prstatus(self):
-		return prstatus
-
-	def _choose_fpregs(self):
-		return fpregs
-
 	def _get_prpsinfo(self):
-		p_class = self._choose_prpsinfo()
-		p = p_class()
+		p = self.desc.prpsinfo()
 
-		memset(addressof(p), 0, sizeof(p_class()))
+		memset(addressof(p), 0, sizeof(p))
 		#('pr_state',	c_ubyte),
 		p.pr_state	= self.core['tc']['task_state']#FIXME Is it?
 		#('pr_sname',	c_byte),
@@ -310,13 +261,13 @@ class core_dump:
 		return p
 
 	def _get_regs(self, pid=None):
-		r = regs()
+		r = self.desc.regs()
 		if pid == None or pid == self.pid:
 			core_regs = self.core['thread_info']['gpregs']
 		else:
 			core_regs = self._open_and_load('core-'+str(pid))[0]['thread_info']['gregs']
 
-		memset(addressof(r), 0, sizeof(regs()))
+		memset(addressof(r), 0, sizeof(r))
 		#('r15',		c_ulonglong),
 		r.r15		= core_regs['r15']
 		#('r14',		c_ulonglong),
@@ -375,14 +326,14 @@ class core_dump:
 		return r
 
 	def _get_fpregs(self, pid=None):
-		fp = fpregs()
+		fp = self.desc.fpregs()
 
 		if pid == self.pid or pid == None:
 			core_regs = self.core['thread_info']['fpregs']
 		else:
 			core_regs = self._open_and_load('core-'+str(pid))[0]['thread_info']['fpregs']
 
-		memset(addressof(fp), 0, sizeof(fpregs()))
+		memset(addressof(fp), 0, sizeof(fp))
 		#('cwd',		c_ushort),
 		fp.cwd			= core_regs['cwd']
 		#('swd',		c_ushort),
@@ -408,10 +359,9 @@ class core_dump:
 		return fp
 
 	def _get_core_user(self):
-		c_class = self._choose_core_user()
-		c = c_class()
+		c = self.desc.core_user()
 
-		memset(addressof(c), 0, sizeof(core_user()))
+		memset(addressof(c), 0, sizeof(c))
 		#('regs',	regs),
 		c.regs		= self._get_regs()
 		#('fpvalid',	c_ulong),
@@ -451,8 +401,7 @@ class core_dump:
 		return c
 
 	def _get_prstatus(self, pid):
-		p_class = self._choose_prstatus()
-		p = p_class()
+		p = self.desc.prstatus()
 
 		memset(addressof(p), 0, sizeof(p))
 
@@ -486,18 +435,17 @@ class core_dump:
 		return p
 
 	def _write_thread_regs(self, buf, pid):
-		nhdr_class = self._choose_nhdr()
-		nhdr = nhdr_class()
+		nhdr = self.desc.nhdr()
 		memset(addressof(nhdr), 0, sizeof(nhdr))
 		nhdr.n_namesz	= 5
-		nhdr.n_descsz	= sizeof(prstatus())
+		nhdr.n_descsz	= sizeof(self.desc.prstatus())
 		nhdr.n_type	= elf.NT_PRSTATUS
 
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 		buf.write(self._get_prstatus(pid))
 
-		nhdr.n_descsz	= sizeof(fpregs())
+		nhdr.n_descsz	= sizeof(self.desc.fpregs())
 		nhdr.n_type	= elf.NT_FPREGSET
 
 		buf.write(nhdr)
@@ -513,15 +461,14 @@ class core_dump:
 		num_extra_headers = 0
 
 		# EHDR
-		ehdr_class = self._choose_ehdr()
-		ehdr = ehdr_class()
+		ehdr = self.desc.ehdr()
 		memset(addressof(ehdr), 0, sizeof(ehdr))
 		ehdr.e_ident[elf.EI_MAG0]	= elf.ELFMAG0
 		ehdr.e_ident[elf.EI_MAG1]	= ord(elf.ELFMAG1)
 		ehdr.e_ident[elf.EI_MAG2]	= ord(elf.ELFMAG2)
 		ehdr.e_ident[elf.EI_MAG3]	= ord(elf.ELFMAG3)
-		ehdr.e_ident[elf.EI_CLASS]	= self._choose_ELFCLASS()
-		ehdr.e_ident[elf.EI_DATA]	= self._choose_ELFDATA()
+		ehdr.e_ident[elf.EI_CLASS]	= self.desc.ELFCLASS
+		ehdr.e_ident[elf.EI_DATA]	= self.desc.ELFDATA
 		ehdr.e_ident[elf.EI_VERSION]	= elf.EV_CURRENT
 
 		ehdr.e_type		= elf.ET_CORE
@@ -536,30 +483,23 @@ class core_dump:
 		buf.write(ehdr)
 
 		# PHDRs starting with the PT_NOTE
-		phdr_class = self._choose_phdr()
-		phdr = phdr_class()
+		phdr = self.desc.phdr()
 
-		offset = sizeof(ehdr_class())
-		offset += (num_mappings + num_extra_headers + 1)*sizeof(phdr_class())
+		offset = sizeof(self.desc.ehdr())
+		offset += (num_mappings + num_extra_headers + 1)*sizeof(phdr)
 
-		nhdr_class	= self._choose_nhdr()
-		prpsinfo_class	= self._choose_prpsinfo()
-		core_user_class	= self._choose_core_user()
-		prstatus_class	= self._choose_prstatus()
-		fpregs_class	= self._choose_fpregs()
+		filesz = sizeof(self.desc.nhdr()) + 8 + sizeof(self.desc.prpsinfo())
+		filesz += sizeof(self.desc.nhdr()) + 8 + sizeof(self.desc.core_user())
+		filesz += num_threads*(sizeof(self.desc.nhdr()) + 8 +\
+				sizeof(self.desc.prstatus())+\
+				sizeof(self.desc.nhdr()) + 8 + sizeof(self.desc.fpregs()))
 
-		filesz = sizeof(nhdr_class()) + 8 + sizeof(prpsinfo_class())
-		filesz += sizeof(nhdr_class()) + 8 + sizeof(core_user_class())
-		filesz += num_threads*(sizeof(nhdr_class()) + 8 + sizeof(prstatus_class())+\
-				sizeof(nhdr_class()) + 8 + sizeof(fpregs_class()))
-
-		auxv_t_class = self._choose_auxv_t()
 		num_auxv = len(self.mm['mm_saved_auxv'])
 		if num_auxv != 0:
-			filesz += 8 + sizeof(nhdr_class()) + num_auxv*sizeof(auxv_t_class())
+			filesz += 8 + sizeof(self.desc.nhdr()) + num_auxv*sizeof(self.desc.auxv_t())
 
 		# Write PT_NOTE
-		memset(addressof(phdr), 0, sizeof(phdr_class()))
+		memset(addressof(phdr), 0, sizeof(phdr))
 		phdr.p_type	= elf.PT_NOTE
 		phdr.p_offset	= offset
 		phdr.p_filesz	= filesz
@@ -609,15 +549,15 @@ class core_dump:
 			ofs += 4096*m['nr_pages']
 
 		vdso_data.seek(0)
-		vdso_ehdr = ehdr_class()
+		vdso_ehdr = self.desc.ehdr()
 		vdso_data.readinto(vdso_ehdr)
 		vdso_data.read(vdso_ehdr.e_phoff)
-		vdso_phdr = phdr_class()
+		vdso_phdr = self.desc.phdr()
 		for i in range(vdso_ehdr.e_phnum):
 			vdso_data.readinto(vdso_phdr)
 			if vdso_phdr.p_type != elf.PT_LOAD:
 				continue
-			memcpy(addressof(phdr), vdso_phdr, sizeof(phdr_class()))
+			memcpy(addressof(phdr), vdso_phdr, sizeof(vdso_phdr))
 			offset	+= filesz
 			filesz	= phdr.p_filesz
 			phdr.p_offset	= offset
@@ -626,16 +566,16 @@ class core_dump:
 			buf.write(phdr)
 
 		# Write the note section
-		nhdr = nhdr_class()
-		memset(addressof(nhdr), 0, sizeof(nhdr_class()))
+		nhdr = self.desc.nhdr()
+		memset(addressof(nhdr), 0, sizeof(nhdr))
 		nhdr.n_namesz	= 5
-		nhdr.n_descsz	= sizeof(prpsinfo_class())
+		nhdr.n_descsz	= sizeof(self.desc.prpsinfo())
 		nhdr.n_type	= elf.NT_PRPSINFO
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 		buf.write(self._get_prpsinfo())
 
-		nhdr.n_descsz	= sizeof(core_user_class())
+		nhdr.n_descsz	= sizeof(self.desc.core_user())
 		nhdr.n_type	= elf.NT_PRXREG
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
@@ -643,8 +583,8 @@ class core_dump:
 
 		# AUXV
 		num_auxv = len(self.mm['mm_saved_auxv'])/2
-		auxv = auxv_t_class()
-		nhdr.n_descsz	= num_auxv * sizeof(auxv_t_class())
+		auxv = self.desc.auxv_t()
+		nhdr.n_descsz	= num_auxv * sizeof(auxv)
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 
