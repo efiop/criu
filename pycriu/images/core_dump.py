@@ -474,7 +474,31 @@ class core_dump:
 		chunk.seek(0)
 		return chunk
 
+	def _get_vdso___(self):
+		auxv = self.desc.auxv_t()
+		vdso_ehdr_addr = 0
+		vdso_ehdr = self.desc.ehdr()
+
+## DELETE
+		VMA_AREA_VDSO = 1 << 3
+		vdso_vma = filter(lambda x: x['status'] & VMA_AREA_VDSO, self.mm['vmas'])[0]
+		print(hex(vdso_vma['start']))
+##
+
+		#FIXME add helper for auxv
+		for i in range(len(self.mm['mm_saved_auxv'])/2):
+			auxv.a_type	= self.mm['mm_saved_auxv'][i]
+			auxv.a_un.a_val	= self.mm['mm_saved_auxv'][i+1]
+			if auxv.a_type == elf.AT_SYSINFO_EHDR:
+				print("OLOLO!")
+				print(hex(auxv.a_un.a_val))
+				
+				chunk = self._get_mem_chunk(auxv.a_un.a_val, sizeof(vdso_ehdr))
+				chunk.readinto(vdso_ehdr)
+			
+
 	def _get_vdso(self):
+		# FIXME Maybe it is better to parse auxv like we do above???
 		VMA_AREA_VDSO = 1 << 3
 		vdso_vma = filter(lambda x: x['status'] & VMA_AREA_VDSO, self.mm['vmas'])[0]
 
@@ -503,8 +527,10 @@ class core_dump:
 		num_mappings = len(self.mm['vmas'])
 		num_threads = len(filter(lambda x: x['pid'] == self.pid, self.pstree)[0]['threads'])
 
-		num_extra_headers = len(self.vdso_phdrs)
-		print(str(num_extra_headers))
+#		num_extra_headers = len(self.vdso_phdrs)
+#		print(str(num_extra_headers))
+		# FIXME no vdso in real core dump
+		num_extra_headers = 0
 
 		# EHDR
 		ehdr = self.desc.ehdr()
@@ -540,7 +566,7 @@ class core_dump:
 				sizeof(self.desc.prstatus())+\
 				sizeof(self.desc.nhdr()) + 8 + sizeof(self.desc.fpregs()))
 
-		num_auxv = len(self.mm['mm_saved_auxv'])
+		num_auxv = len(self.mm['mm_saved_auxv'])/2
 		if num_auxv != 0:
 			filesz += 8 + sizeof(self.desc.nhdr()) + num_auxv*sizeof(self.desc.auxv_t())
 
@@ -576,49 +602,13 @@ class core_dump:
 
 			buf.write(phdr)
 
-		# Find vdso and write it's headers
-#		VMA_AREA_VDSO = 1 << 3
-#		vdso_vma = filter(lambda x: x['status'] & VMA_AREA_VDSO, self.mm['vmas'])[0]
-#
-#		ofs = 0
-#		vdso_data = io.BytesIO()
-#		for m in self.pagemap[1:]:
-#			# Not totally sure that vdso can't be spreaded, but still
-#			if m['vaddr'] >= vdso_vma['start'] and\
-#			   m['vaddr'] + 4096*m['nr_pages'] <= vdso_vma['end']:
-#				self.pages.seek(ofs)
-#				vdso_data.write(self.pages.read(vdso_vma['end'] - vdso_vma['start']))
-#				# Don't forget to rewind
-#				self.pages.seek(0)
-#				break
-#
-#			ofs += 4096*m['nr_pages']
-#
-#		vdso_data.seek(0)
-#		vdso_ehdr = self.desc.ehdr()
-#		vdso_data.readinto(vdso_ehdr)
-#		vdso_data.read(vdso_ehdr.e_phoff)
-#		vdso_phdr = self.desc.phdr()
-#		for i in range(vdso_ehdr.e_phnum):
-#			vdso_data.readinto(vdso_phdr)
-#			if vdso_phdr.p_type == elf.PT_LOAD:
-#				continue
-#			#memcpy(addressof(phdr), vdso_phdr, sizeof(vdso_phdr))
-#			phdr = copy.deepcopy(vdso_phdr)
-#			offset	+= filesz
-#			filesz	= phdr.p_filesz
-#			phdr.p_offset	= offset
-#			phdr.p_paddr	= 0
-#
-#			buf.write(phdr)
-
-		# Write vdso phdrs
-		for p in self.vdso_phdrs:
-			offset += filesz
-			filesz = p.p_filesz
-			p.p_offset = offset
-			p.p_paddr = 0
-			buf.write(p)
+		# Write vdso phdrs FIXME no vdso phdrs in real core dump!!
+#		for p in self.vdso_phdrs:
+#			offset += filesz
+#			filesz = p.p_filesz
+#			p.p_offset = offset
+#			p.p_paddr = 0
+#			buf.write(p)
 		# Write the note section
 		nhdr = self.desc.nhdr()
 		memset(addressof(nhdr), 0, sizeof(nhdr))
@@ -639,6 +629,7 @@ class core_dump:
 		num_auxv = len(self.mm['mm_saved_auxv'])/2
 		auxv = self.desc.auxv_t()
 		nhdr.n_descsz	= num_auxv * sizeof(auxv)
+		nhdr.n_type	= elf.NT_AUXV
 		buf.write(nhdr)
 		buf.write("CORE\0\0\0\0")
 
@@ -667,34 +658,10 @@ class core_dump:
 		# Don't forget to rewind
 		self.pages.seek(0)
 
-		# And don't forget about vdso
-#		for i in range(vdso_ehdr.e_phnum):
-#			vdso_data.seek(0)
-#			# FIXME need to skip ofset!!!
-#			vdso_data.readinto(vdso_phdr)
-#			if vdso_phdr.p_type == elf.PT_LOAD:
-#				# This segment has already been dumped
-#				continue
-#			# FIXME make a helper to get mem segment
-#			ofs = 0
-#			print(vdso_phdr.p_filesz)
-#			for m in self.pagemap[1:]:
-#				# Not totally sure that vdso can't be spreaded, but still
-#				# FIXME I SHOULDN'T READ FROM PAGE START, BUT FROM vdso.p_vaddr
-#				if m['vaddr'] >= vdso_phdr.p_vaddr and\
-#				   m['vaddr'] + 4096*m['nr_pages'] <= vdso_phdr.p_vaddr\
-#									+ vdso_phdr.p_filesz:
-#					self.pages.seek(ofs)
-#					buf.write(self.pages.read(vdso_phdr.p_filesz))
-#					# Don't forget to rewind
-#					self.pages.seek(0)
-#					break
-#
-#				ofs += 4096*m['nr_pages']
+		# Write vdso contents FIXME no vdso in real core dump
+#		for c in self.vdso_phdrs_cont:
+#			buf.write(c.read())
 
-		# Write vdso contents
-		for c in self.vdso_phdrs_cont:
-			buf.write(c.read())
 		# Finally dump buf into file
 		buf.seek(0)
 		f.write(buf.read())
