@@ -211,27 +211,6 @@ class core_dump:
 		f.close()
 		return img['entries']
 
-	def _check_files(self):
-		"""
-		This is a lite version of images checker.
-		"""
-
-		# Check that pstree contains requested pid
-		pstree = None
-
-		with open(self.imgs_dir + 'pstree.img', 'r') as f:
-			pstree = images.load(f)
-
-		matches = filter(lambda x: x['pid'] == self.pid, pstree['entries'])
-		if len(matches) == 0:
-			raise Exception("No process with pid " + self.pid +\
-				        " found in " + self.imgs_dir + "/pstree.img")
-		elif len(matches) > 1:
-			raise Exception(self.imgs_dir + "/pstree.img contains more than 1"\
-					"entry with pid " + self.pid)
-
-		# Check that creds are present
-
 	def _get_prpsinfo(self):
 		p = self.desc.prpsinfo()
 
