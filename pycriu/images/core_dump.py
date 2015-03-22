@@ -187,8 +187,8 @@ class core_dump:
 
 		self.desc = desc_by_arch[self.core['mtype']]
 
-		self.auxvs = self._get_auxvs()
-		self.vdso_ehdr, self.vdso_phdrs, self.vdso_phdrs_cont = self._get_vdso()
+		self.auxvs	= self._get_auxvs()
+		self.vdso	= self._get_vdso()
 
 	def _open_and_load(self, base_name):
 		"""
@@ -494,14 +494,23 @@ class core_dump:
 			phdrs.append(phdr)
 			conts.append(cont)
 
-		return (ehdr, phdrs, conts)
+		class vdso_class:
+			ehdr	= None
+			phdrs	= []
+			conts	= []
+
+		ret = vdso_class()
+		ret.ehdr	= ehdr
+		ret.phdrs	= phdrs
+		ret.conts	= conts
+		return ret
 
 	def write(self, f):
 		buf = io.BytesIO()
 		num_mappings = len(self.mm['vmas'])
 		num_threads = len(filter(lambda x: x['pid'] == self.pid, self.pstree)[0]['threads'])
 
-		num_extra_headers = len(self.vdso_phdrs)
+		num_extra_headers = len(self.vdso.phdrs)
 		# FIXME no vdso in real core dump
 		#num_extra_headers = 0
 
@@ -575,7 +584,7 @@ class core_dump:
 			buf.write(phdr)
 
 		# Write vdso phdrs FIXME no vdso phdrs in real core dump!!
-		for p in self.vdso_phdrs:
+		for p in self.vdso.phdrs:
 			offset += filesz
 			filesz = p.p_filesz
 			p.p_offset = offset
@@ -628,7 +637,7 @@ class core_dump:
 		self.pages.seek(0)
 
 		# Write vdso contents FIXME no vdso in real core dump
-		for c in self.vdso_phdrs_cont:
+		for c in self.vdso.conts:
 			buf.write(c.read())
 
 		# Finally dump buf into file
