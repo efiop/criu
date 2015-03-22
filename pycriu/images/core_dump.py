@@ -3,14 +3,127 @@
 #     https://code.google.com/p/google-coredumper/
 
 from ctypes import *
-import elf
+import elf as elf_h
 import os, sys, io
 import images
 import copy
 
+class elfhdr(elf_h.Elf64_Ehdr):
+	pass
+
+
+class memelfnote(Structure):
+	_fields_ = [
+		('name',	c_char_p),
+		('type',	c_int),
+		('datasz',	c_uint),
+		('data',	c_void_p)
+		]
+
+
+class elf_siginfo(Structure):
+	_fields_ = [
+		('si_signo',	c_int),	# signal number
+		('si_code',	c_int),	# extra code
+		('si_errno',	c_int)	# errno
+		]
+
+
+class timeval(Structure):
+	_fields_ = [
+		('tv_sec',	c_long),	# seconds
+		('tv_usec',	c_long)		# microseconds
+		]
+
+
+class elf_gregset_t(Structure):
+	_fields_ = [
+		('r15', 	c_ulong),
+		('r14', 	c_ulong),
+		('r13', 	c_ulong),
+		('r12',		c_ulong),
+		('bp',		c_ulong),
+		('bx',		c_ulong),
+		('r11',		c_ulong),
+		('r10',		c_ulong),
+		('r9',		c_ulong),
+		('r8',		c_ulong),
+		('ax',		c_ulong),
+		('cx',		c_ulong),
+		('dx',		c_ulong),
+		('si',		c_ulong),
+		('di',		c_ulong),
+		('orig_ax',	c_ulong),
+		('ip',		c_ulong),
+		('cs',		c_ulong),
+		('flags',	c_ulong),
+		('sp',		c_ulong),
+		('ss',		c_ulong),
+		('fs_base',	c_ulong),
+		('gs_base',	c_ulong),
+		('ds',		c_ulong),
+		('es',		c_ulong),
+		('fs',		c_ulong),
+		('gs',		c_ulong)
+		]
+
+
+class elf_prstatus(Structure):
+	_fields_ = [
+		('pr_info',	elf_siginfo),	# Info associated with signal
+		('pr_cursig',	c_short),	# Current signal
+		('pr_sigpend',	c_ulong),	# Set of pending signals
+		('pr_sighold',	c_ulong),	# Set of held signals
+		('pr_pid',	c_int),
+		('pr_ppid',	c_int),
+		('pr_pgrp',	c_int),
+		('pr_sid',	c_int),
+		('pr_utime',	timeval),	# User time
+		('pr_stime',	timeval),	# System time
+		('pr_cutime',	timeval),	# Cumulative user time
+		('pr_cstime',	timeval),	# Cumulative system time
+		('pr_reg',	elf_gregset_t),	# GP registers
+		#XXX Skip fields enabled by CONFIG_BINFMT_ELF_FDPIC
+		('pr_fpvalid',	c_int)		# True if math co-processor being used
+		]
+
+
+class elf_prpsinfo(Structure):
+	_fields_ = [
+		('pr_state',	c_byte),	# Numeric process state
+		('pr_sname',	c_char),	# Char for pr_state
+		('pr_zomb',	c_byte),	# zombie
+		('pr_nice',	c_char),	# Nice val
+		('pr_flag',	c_ulong),	# flags
+		('pr_uid',	c_uint),
+		('pr_gid',	c_uint),
+		('pr_pid',	c_int),
+		('pr_ppid',	c_int),
+		('pr_pgrp',	c_int),
+		('pr_sid',	c_int),
+		('pr_fname',	c_char*16),	# filename of executable
+		('pr_psargs',	c_char*80),	# initial part of arg list
+		]
+
+
+class elf_note_info(Structure):
+	_fields_ = [
+		('notes',		POINTER(memelfnote)),
+		('notes_files',		POINTER(memelfnote)),
+		('prstatus',		POINTER(elf_prstatus)), #NT_PRSTATUS
+		('psinfo',		POINTER(elf_prpsinfo)), #NT_PRPSINFO
+		# ('thread_list',		list_head), XXX using list instead
+		('fpu',			POINTER(elf_fpregset_t)),
+		# elf_fpxregset_t *xfpu XXX 32bit
+		('csigdata',		user_siginfo_t),
+		('thread_status_size',	c_int),
+		('numnote',		c_int)
+		]
+
+
+##################################
 class fregs(Structure):
-	def __init__(self, arch):
-		fields = [
+		_fields_ = [
 		('cwd', c_uint),
 		('swd', c_uint),
 		('twd', c_uint),
@@ -185,10 +298,13 @@ class core_dump:
 		#FIXME maybe open in binary mode? Or just read everything?
 		self.pages	= open(self.imgs_dir+'/pages-'+str(self.pagemap[0]['pages_id']) + '.img')
 
-		self.desc = desc_by_arch[self.core['mtype']]
+		self.elf		= elf_h.Elf64_Ehdr()
+		self.info		= [] # XXX elf_note_info inside
+		self.phdr4note		= elf_h.Elf64_Phdr()
+		self.phdr4extnum	= elf_h.Elf64_Shdr()
+		self._get_vdso()
 
-		self.auxvs	= self._get_auxvs()
-		self.vdso	= self._get_vdso()
+		self.auxvs		= self._get_auxvs()
 
 	def _open_and_load(self, base_name):
 		"""
@@ -467,43 +583,6 @@ class core_dump:
 
 		return auxvs
 
-	def _get_vdso(self):
-		# Find vdso ehdr
-		auxv = filter(lambda x: x.a_type == elf.AT_SYSINFO_EHDR, self.auxvs)[0]
-		addr = auxv.a_un.a_val
-
-		ehdr = self.desc.ehdr()
-		self._get_mem_chunk(addr, sizeof(ehdr)).readinto(ehdr)
-
-		# Skip offset
-		addr += ehdr.e_phoff
-
-		# Read non PT_LOAD phdrs and their contents
-		phdrs = []
-		conts = []
-		for i in range(ehdr.e_phnum):
-			phdr = self.desc.phdr()
-			self._get_mem_chunk(addr, sizeof(phdr)).readinto(phdr)
-			addr += sizeof(phdr)
-
-			if phdr.p_type == elf.PT_LOAD:
-				continue
-
-			cont = self._get_mem_chunk(phdr.p_vaddr, phdr.p_filesz)
-			
-			phdrs.append(phdr)
-			conts.append(cont)
-
-		class vdso_class:
-			ehdr	= None
-			phdrs	= []
-			conts	= []
-
-		ret = vdso_class()
-		ret.ehdr	= ehdr
-		ret.phdrs	= phdrs
-		ret.conts	= conts
-		return ret
 
 	def write(self, f):
 		buf = io.BytesIO()
@@ -643,3 +722,146 @@ class core_dump:
 		# Finally dump buf into file
 		buf.seek(0)
 		f.write(buf.read())
+
+################################################################################
+	def _get_vdso(self):
+		# Find vdso ehdr
+		auxv = filter(lambda x: x.a_type == elf.AT_SYSINFO_EHDR, self.auxvs)[0]
+		addr = auxv.a_un.a_val
+
+		ehdr = elf_h.Elf64_Ehdr()
+		self._get_mem_chunk(addr, sizeof(ehdr)).readinto(ehdr)
+
+		# Skip offset
+		addr += ehdr.e_phoff
+
+		# Read all phdrs, but read contents later
+		phdrs = []
+		conts = []
+		for i in range(ehdr.e_phnum):
+			phdr = elf_h.Elf64_Ehdr()
+			self._get_mem_chunk(addr, sizeof(phdr)).readinto(phdr)
+			addr += sizeof(phdr)
+
+			#cont = self._get_mem_chunk(phdr.p_vaddr, phdr.p_filesz)
+			
+			phdrs.append(phdr)
+			#conts.append(cont)
+
+
+		class vdso_class:
+			ehdr	= None
+			phdrs	= []
+
+		self.vdso	= vdso_class()
+		self.vdso.ehdr	= ehdr
+		self.vdso.phdrs	= phdrs
+
+	def _fill_note_info(self):
+		"""
+		Collect all the non-memory information about the process for the
+		notes. This also sets up the file header.
+		"""
+		#FIXME
+		pass
+
+	def _fill_note_phdr(self, sz, offset):
+		#FIXME
+		pass
+
+	def _roundup(self):
+		#FIXME
+		pass
+
+	def _vma_dump_size(vma):
+		#FIXME should be "if vma->vm_flags & VM_DONTDUMP return 0"
+		# but i'm not sure how to implement
+
+		#FIXME Need to investigate by looking at vma_dump_size from fs/binfmt_elf.c
+		# For example, it says that we should dump only 1 page of DSO(NOT Vdso!) or
+		# executable mapping.
+
+		#FIXME RIGHT FUCKING NOW!!!!
+		# Ask Pavel how dump of a file mapping is done.
+
+		return vma['end'] - vma['start']
+
+	def _elf_core_extra_phdrs(self):
+		#FIXME CONSIDER case when there is no vDSO. rework get_vdso too
+		return self.vsyscall_ehdr.e_phnum
+
+	def _get_note_info_size(self):
+		return self.info.size
+
+	def _elf_core_extra_data_size(self):
+		for phdr in self.vdso.phdrs:
+			if phdr.p_type == elf_h.PT_LOAD:
+				return phdr.p_filesz
+
+	def _dump_emit(self, f, obj):
+		"""
+		Write obj to f. Even though we don't actualy have any restrictions
+		on core dump size, we keep function names to be similar to thouse
+		found in kernel.
+		"""
+		#FIXME
+		pass
+
+	def write(self, f):
+		segs =	len(self.mm['vmas'])
+		segs +=	self._elf_core_extra_phdrs()
+
+		#XXX here should be gate_vma handling, but we don't support 32bit
+		#tasks, which use linux-gate*.so, so we can skip it for now.
+
+		# For notes section
+		segs += 1
+
+		# If segs > PN_XNUM(0xffff), then e_phnum overflows. To avoid
+		# this, kernel supports extended numbering. Have a look at
+		# include/linux/elf.h for further information. */
+		e_phnum = PN_XNUM if segs > PN_XNUM else segs
+
+		self._fill_note_info()
+
+		offset = 0
+		offset += sizeof(self.elf)			# Elf header
+		offset += segs * sizeof(elf_h.Elf64_Phdr())	# Program headers
+
+		# Write notes phdr entry
+		sz = self._get_note_info_size()
+		self._fill_note_phdr(sz, offset)
+		offset += sz
+
+		ELF_EXEC_PAGESIZE = 4096
+		offset = self._roundup(offset, ELF_EXEC_PAGESIZE)
+		dataoff = offset
+
+		vma_data_size = 0
+		vma_filesz = []
+		for vma in self.mm['vmas']:
+			dump_size	= self._vma_dump_size(vma)
+			vma_filesz.append(dump_size)
+			vma_data_size	+= dump_size
+
+		offset += vma_data_size
+		offset += self._elf_core_extra_data_size()
+		e_shoff = offset
+
+		if e_phnum == PN_XNUM:
+			self._fill_extnum_info(e_shoff, segs)
+
+		offset = dataoff
+
+		self._dump_emit(f, self.elf)
+		self._dump_emit(f, self.phdr4note)
+
+		# Write program headers for segments dump
+		for vma in self.mm['vmas']:
+			phdr = elf_h.Elf64_Phdr()
+
+			phdr.p_type	= elf_h.PT_LOAD:
+			phdr.p_offset	= offset
+			phdr.p_vaddr	= vma['start']
+			phdr.p_paddr	= 0
+			phdr.p_filesz	= 
