@@ -12,13 +12,7 @@ class elfhdr(elf_h.Elf64_Ehdr):
 	pass
 
 
-class memelfnote(Structure):
-	_fields_ = [
-		('name',	c_char_p),
-		('type',	c_int),
-		('datasz',	c_uint),
-		('data',	c_void_p)
-		]
+
 
 
 class elf_siginfo(Structure):
@@ -106,20 +100,45 @@ class elf_prpsinfo(Structure):
 		]
 
 
-class elf_note_info(Structure):
+##################################
+#FIXME THIS ONE IS THE RIGHT ONE BECAUSE CORE_DUMP_USE_REGSET if defined for x86
+class memelfnote(Structure):
 	_fields_ = [
-		('notes',		POINTER(memelfnote)),
-		('notes_files',		POINTER(memelfnote)),
-		('prstatus',		POINTER(elf_prstatus)), #NT_PRSTATUS
-		('psinfo',		POINTER(elf_prpsinfo)), #NT_PRPSINFO
-		# ('thread_list',		list_head), XXX using list instead
-		('fpu',			POINTER(elf_fpregset_t)),
-		# elf_fpxregset_t *xfpu XXX 32bit
-		('csigdata',		user_siginfo_t),
-		('thread_status_size',	c_int),
-		('numnote',		c_int)
+		('name',	c_char_p),
+		('type',	c_int),
+		('datasz',	c_uint),
+		('data',	c_void_p)
 		]
 
+class user_siginfo_t(Structure):
+	#FIXME See include/uapi/asm-generic/siginfo.h +48
+	pass
+
+class task_struct(Structure):
+	#FIXME
+	pass
+
+class elf_thread_core_info(Structure):
+	notes = [] #list of memelfnotes
+	_fields_ = [
+		#('next', POINTER(elf_thread_core_info)), XXX using list
+		('task', POINTER(task_struct),
+		('prstatus', elf_prstatus)
+		#('notes', memelfnote[0] XXX use list or smth
+		]
+
+class elf_note_info(Structure):
+	threads = [] #list of elf_thread_core_infos
+	_fields_ = [
+		#('thread',		POINTER(elf_thread_core_info)), XXX using list
+		('psinfo',		memelfnote),
+		('signote',		memelfnote),
+		('auxv',		memelfnote),
+		('files',		memelfnote),
+		('csigdata',		user_siginfo_t),
+		('size',		c_size_t),
+		('thread_notes',	c_int)
+		]
 
 ##################################
 class fregs(Structure):
@@ -299,7 +318,7 @@ class core_dump:
 		self.pages	= open(self.imgs_dir+'/pages-'+str(self.pagemap[0]['pages_id']) + '.img')
 
 		self.elf		= elf_h.Elf64_Ehdr()
-		self.info		= [] # XXX elf_note_info inside
+		self.info		= elf_note_info()
 		self.phdr4note		= elf_h.Elf64_Phdr()
 		self.phdr4extnum	= elf_h.Elf64_Shdr()
 		self._get_vdso()
@@ -728,6 +747,7 @@ class core_dump:
 		# Find vdso ehdr
 		auxv = filter(lambda x: x.a_type == elf.AT_SYSINFO_EHDR, self.auxvs)[0]
 		addr = auxv.a_un.a_val
+		vdso_addr = addr
 
 		ehdr = elf_h.Elf64_Ehdr()
 		self._get_mem_chunk(addr, sizeof(ehdr)).readinto(ehdr)
@@ -752,18 +772,28 @@ class core_dump:
 		class vdso_class:
 			ehdr	= None
 			phdrs	= []
+			addr	= None
 
 		self.vdso	= vdso_class()
 		self.vdso.ehdr	= ehdr
 		self.vdso.phdrs	= phdrs
+		self.vdso.addr	= vdso_addr
 
 	def _fill_note_info(self):
 		"""
 		Collect all the non-memory information about the process for the
 		notes. This also sets up the file header.
 		"""
-		#FIXME
-		pass
+
+		self.info.size = 0
+
+		psinfo = elf_prpsinfo()
+
+		#fill_note
+		self.info.psinfo.name	= "CORE"
+		self.info.psinfo.type	= elf_h.NT_PRPSINFO
+		self.info.psinfo.datasz	= sizeof(psinfo)
+		self.info.psinfo.
 
 	def _fill_note_phdr(self, sz, offset):
 		#FIXME
@@ -774,16 +804,7 @@ class core_dump:
 		pass
 
 	def _vma_dump_size(vma):
-		#FIXME should be "if vma->vm_flags & VM_DONTDUMP return 0"
-		# but i'm not sure how to implement
-
-		#FIXME Need to investigate by looking at vma_dump_size from fs/binfmt_elf.c
-		# For example, it says that we should dump only 1 page of DSO(NOT Vdso!) or
-		# executable mapping.
-
-		#FIXME RIGHT FUCKING NOW!!!!
-		# Ask Pavel how dump of a file mapping is done.
-
+		#FIXME
 		return vma['end'] - vma['start']
 
 	def _elf_core_extra_phdrs(self):
@@ -804,6 +825,10 @@ class core_dump:
 		on core dump size, we keep function names to be similar to thouse
 		found in kernel.
 		"""
+		#FIXME
+		pass
+
+	def _elf_core_write_extra_phdrs(self):
 		#FIXME
 		pass
 
@@ -857,11 +882,38 @@ class core_dump:
 		self._dump_emit(f, self.phdr4note)
 
 		# Write program headers for segments dump
-		for vma in self.mm['vmas']:
+		for i in xrange(len(self.mm['vmas'])):
+			vma = self.mm['vmas'][i]
 			phdr = elf_h.Elf64_Phdr()
 
 			phdr.p_type	= elf_h.PT_LOAD:
 			phdr.p_offset	= offset
 			phdr.p_vaddr	= vma['start']
 			phdr.p_paddr	= 0
-			phdr.p_filesz	= 
+			phdr.p_filesz	= vma_filesz[i]
+			phdr.p_memsz	= vma['end'] - vma['start']
+			offset		+= phdr.p_filesz
+			phdr.p_flags	= elf_h.PF_R if vma['prot'] & PROT_READ else 0
+			if vma['prot'] & PROT_WRITE:
+				phdr.p_flags = phdr.p_flags | elf_h.PF_W
+			if vma['prot'] & PROT_EXEC:
+				phdr.p_flags = phdr.p_flags | elf_h.PF_X
+			ELF_EXEC_PAGESIZE = 4096#from kernel
+			phdr.p_align	= ELF_EXEC_PAGESIZE
+
+			self._dump_emit(f, phdr)
+
+		self._elf_core_write_extra_phdrs(offset)
+
+		# write out the notes section
+		self._write_note_info()
+
+		self._elf_coredump_extra_notes_write()
+
+		# Align to page
+		self._dump_skip(f, dataoff - self._written)
+
+		for i in xrange(len(self.mm['vmas'])):
+			end = vma['start'] + vma_filesz[i]
+
+			for 
