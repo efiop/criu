@@ -1,8 +1,9 @@
-all: pb.py protobuf magic.py elf.py
+all: pb.py protobuf magic.py elf.py procfs.py
 
 .PHONY: all protobuf clean pb.py
 
 elf_h := /usr/include/elf.h
+procfs_h := /usr/include/sys/procfs.h
 
 proto := $(filter-out $(SRC_DIR)/protobuf/rpc.proto, $(wildcard $(SRC_DIR)/protobuf/*.proto))
 proto-py-modules := $(foreach m,$(proto),$(subst -,_,$(notdir $(m:.proto=_pb2))))
@@ -26,6 +27,9 @@ pb.py: protobuf
 
 elf.py: $(elf_h)
 	$(Q) ctypesgen.py $(elf_h) -o $@
+
+procfs.py: $(procfs_h)
+	$(Q) ctypesgen.py $(procfs_h) -o $@
 
 clean:
 	$(Q) $(RM) ./*_pb2.py ./*.pyc magic.py pb.py elf.py
