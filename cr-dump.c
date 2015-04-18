@@ -653,7 +653,8 @@ int dump_thread_core(int pid, CoreEntry *core, const struct parasite_dump_thread
 static int dump_task_core_all(struct pstree_item *item,
 		const struct proc_pid_stat *stat,
 		const struct parasite_dump_misc *misc,
-		const struct cr_imgset *cr_imgset)
+		const struct cr_imgset *cr_imgset,
+		char cmdline[])
 {
 	struct cr_img *img;
 	CoreEntry *core = item->core[0];
@@ -669,6 +670,7 @@ static int dump_task_core_all(struct pstree_item *item,
 		goto err;
 
 	strncpy((char *)core->tc->comm, stat->comm, TASK_COMM_LEN);
+	strncpy((char *)core->tc->cmdline, cmdline, TASK_CMDLINE_LEN);
 	core->tc->flags = stat->flags;
 	core->tc->task_state = item->state;
 	core->tc->exit_code = 0;
@@ -1459,6 +1461,7 @@ static int dump_one_task(struct pstree_item *item)
 	struct cr_imgset *cr_imgset = NULL;
 	struct parasite_drain_fd *dfds = NULL;
 	struct proc_posix_timers_stat proc_args;
+	char cmdline[TASK_CMDLINE_LEN];
 
 	INIT_LIST_HEAD(&vmas.h);
 	vmas.nr = 0;
@@ -1477,6 +1480,12 @@ static int dump_one_task(struct pstree_item *item)
 	ret = parse_pid_stat(pid, &pps_buf);
 	if (ret < 0)
 		goto err;
+
+	ret = parse_pid_cmdline(pid, cmdline);
+	if (ret) {
+		pr_err("Parse cmdline (pid: %d) failed with %d\n", pid, ret);
+		goto err;
+	}
 
 	ret = collect_mappings(pid, &vmas);
 	if (ret) {
@@ -1604,7 +1613,7 @@ static int dump_one_task(struct pstree_item *item)
 		goto err_cure;
 	}
 
-	ret = dump_task_core_all(item, &pps_buf, &misc, cr_imgset);
+	ret = dump_task_core_all(item, &pps_buf, &misc, cr_imgset, cmdline);
 	if (ret) {
 		pr_err("Dump core (pid: %d) failed with %d\n", pid, ret);
 		goto err_cure;

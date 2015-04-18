@@ -106,6 +106,7 @@
 #define CR_CAP_SIZE	2
 
 #define TASK_COMM_LEN 16
+#define TASK_CMDLINE_LEN 80
 
 #define TASK_ALIVE		0x1
 #define TASK_DEAD		0x2

@@ -615,6 +615,41 @@ err_n:
 
 }
 
+int parse_pid_cmdline(pid_t pid, char cmdline[])
+{
+	int fd;
+	ssize_t n;
+	char *p;
+
+	fd = open_proc(pid, "cmdline");
+	if (fd < 0)
+		return -1;
+
+	n = read(fd, buf, BUF_SIZE);
+	/* 0 is okay, as it may be zombie */
+	if (n < 0) {
+		pr_perror("Can't read cmdline for %d\n", pid);
+		close(fd);
+		return -1;
+	}
+
+	close(fd);
+
+	/*
+	 * cmdline contains null-separated strings,
+	 * so we need to replace '\0's with spaces.
+	 */
+	for (p = buf; p < buf + n; p++)
+		if (*p == '\0')
+			*p = ' ';
+
+	*p = '\0';
+
+	strncpy(cmdline, buf, TASK_CMDLINE_LEN);
+
+	return 0;
+}
+
 int parse_pid_stat(pid_t pid, struct proc_pid_stat *s)
 {
 	char *tok, *p;

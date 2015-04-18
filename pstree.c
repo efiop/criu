@@ -37,7 +37,7 @@ CoreEntry *core_entry_alloc(int th, int tsk)
 
 	sz = sizeof(CoreEntry);
 	if (tsk) {
-		sz += sizeof(TaskCoreEntry) + TASK_COMM_LEN;
+		sz += sizeof(TaskCoreEntry) + TASK_COMM_LEN + TASK_CMDLINE_LEN;
 		if (th) {
 			sz += sizeof(TaskRlimitsEntry);
 			sz += RLIM_NLIMITS * sizeof(RlimitEntry *);
@@ -60,6 +60,8 @@ CoreEntry *core_entry_alloc(int th, int tsk)
 			task_core_entry__init(core->tc);
 			core->tc->comm = xptr_pull_s(&m, TASK_COMM_LEN);
 			memzero(core->tc->comm, TASK_COMM_LEN);
+			core->tc->cmdline = xptr_pull_s(&m, TASK_CMDLINE_LEN);
+			memzero(core->tc->cmdline, TASK_CMDLINE_LEN);
 
 			if (th) {
 				TaskRlimitsEntry *rls;
