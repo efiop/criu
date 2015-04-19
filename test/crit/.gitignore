@@ -3,3 +3,5 @@
 *.txt
 stats-*
 *.json
+loop
+core*

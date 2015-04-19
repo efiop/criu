@@ -1,9 +1,9 @@
-images: clean
-	setsid ./loop.sh < /dev/null &> /dev/null & \
-	../../criu dump -v4 -o dump.log -D ./ -t $${!} --shell-job
+loop:
+	gcc -g $@.c -o $@
+	chmod +x $@
 
-run: images
+run: clean loop
 	./test.sh
 
 clean:
-	rm -f *.img *.log *.txt stats-* *.json
+	rm -f *.img *.log *.txt stats-* *.json loop core.*
