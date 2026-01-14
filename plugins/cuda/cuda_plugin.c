@@ -294,8 +294,11 @@ static int interrupt_restore_thread(int restore_tid, k_rtsigset_t *restore_sigse
 	}
 
 	if (ptrace(PTRACE_SETOPTIONS, restore_tid, NULL, PTRACE_O_SUSPEND_SECCOMP | PTRACE_O_TRACESYSGOOD)) {
-		pr_perror("Failed to set ptrace options on interrupt for restore tid %d", restore_tid);
-		return -1;
+		if (errno != EPERM) {
+			pr_perror("Failed to set ptrace options on interrupt for restore tid %d", restore_tid);
+			return -1;
+		}
+		pr_warn("Insufficient privilege to set PTRACE_O_SUSPEND_SECCOMP; continuing without it\n");
 	}
 
 	if (ptrace(PTRACE_SETSIGMASK, restore_tid, sizeof(*restore_sigset), restore_sigset)) {
@@ -325,8 +328,10 @@ static int resume_restore_thread(int restore_tid, k_rtsigset_t *save_sigset)
 
 	// Clear out PTRACE_O_SUSPEND_SECCOMP when we resume the restore thread
 	if (ptrace(PTRACE_SETOPTIONS, restore_tid, NULL, 0)) {
-		pr_perror("Could not clear ptrace options on restore tid %d", restore_tid);
-		return -1;
+		if (errno != EPERM) {
+			pr_perror("Could not clear ptrace options on restore tid %d", restore_tid);
+			return -1;
+		}
 	}
 
 	if (ptrace(PTRACE_CONT, restore_tid, NULL, 0)) {
