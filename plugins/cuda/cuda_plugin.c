@@ -135,6 +135,8 @@ static int launch_cuda_checkpoint(const char **args, char *buf, int buf_size)
 	while (buf_off < buf_size) {
 		int bytes_read;
 		bytes_read = read(fd[READ], buf + buf_off, buf_size - buf_off);
+		if (bytes_read == -1 && errno == EINTR)
+			continue;
 		if (bytes_read == -1) {
 			pr_perror("Unable to read output of cuda-checkpoint");
 			goto err;
@@ -150,6 +152,8 @@ static int launch_cuda_checkpoint(const char **args, char *buf, int buf_size)
 		char scratch[1024];
 		int bytes_read;
 		bytes_read = read(fd[READ], scratch, sizeof(scratch));
+		if (bytes_read == -1 && errno == EINTR)
+			continue;
 		if (bytes_read == -1) {
 			pr_perror("Unable to read output of cuda-checkpoint");
 			goto err;
@@ -160,9 +164,14 @@ static int launch_cuda_checkpoint(const char **args, char *buf, int buf_size)
 	close(fd[READ]);
 
 	int status, exit_code = -1;
-	if (waitpid(child_pid, &status, 0) == -1) {
-		pr_perror("Unable to wait for the cuda-checkpoint process %d", child_pid);
-		goto err;
+	while (true) {
+		if (waitpid(child_pid, &status, 0) == -1) {
+			if (errno == EINTR)
+				continue;
+			pr_perror("Unable to wait for the cuda-checkpoint process %d", child_pid);
+			goto err;
+		}
+		break;
 	}
 	if (WIFSIGNALED(status)) {
 		int sig = WTERMSIG(status);
@@ -218,6 +227,10 @@ static int get_cuda_restore_tid(int root_pid)
 	const char *args[] = { CUDA_CHECKPOINT, "--get-restore-tid", "--pid", pid_buf, NULL };
 	int ret = launch_cuda_checkpoint(args, pid_out, sizeof(pid_out));
 	if (ret != 0) {
+		if (strstr(pid_out, "Could not find restore thread") != NULL) {
+			pr_info("No CUDA restore thread for pid %d\n", root_pid);
+			return -1;
+		}
 		pr_err("Failed to launch cuda-checkpoint to retrieve restore tid: %s\n", pid_out);
 		return -1;
 	}
